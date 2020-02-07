@@ -21,7 +21,8 @@ def collect_policies():
             try:
                 if cls_name != 'Policy':
                     cls = mod.__dict__[cls_name]
-                    if issubclass(cls, Policy): POLICIES[cls_name] = cls
+                    if issubclass(cls, Policy):
+                        POLICIES[cls_name] = cls
             except TypeError:
                 pass
     return POLICIES
