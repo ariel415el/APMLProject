@@ -7,48 +7,35 @@ tf.logging.set_verbosity(tf.logging.ERROR)
 from collections import deque
 
 EPSILON = 0.05
-STATE_DIM=3
-BATCH_SIZE=1
-DISCOUNT=0.0
-LR=0.025
+STATE_DIM=9
+BATCH_SIZE=16
+DISCOUNT=0.9
+LR=0.005
 UPDATE_STEPS = 5
 MAX_PLAYBACK=100
-EXPLORATION_DECAY=0.99
-DECAY_ROUND=3000
-
-BASE_VALUE_MAP= {-1:0, 0:-5, 1:-5, 2:-5, 3:-5, 4:-5, 5:-5, 6:2, 7:5, 8:-1}
+EXPLORATION_DECAY=0.0005
+DECAY_ROUND=5000
+STEPS_PER_LEARN=1
 NUM_ROTATES = {"N": 0, "E": 1, "S": 2, "W": 3}
-
+NUM_BOARD_VALUES=11
 
 def get_state_from_board(state):
     board, head = state
     head_pos, direction = head
-    res = np.zeros((STATE_DIM,STATE_DIM))
+    res = np.zeros((STATE_DIM,STATE_DIM, NUM_BOARD_VALUES))
     for r in range(STATE_DIM):
         for c in range(STATE_DIM):
             board_r = (head_pos[0]-int(STATE_DIM/2) + r) % board.shape[0]
             board_c = (head_pos[1]-int(STATE_DIM/2) + c) % board.shape[1]
-            res[r, c] = board[board_r, board_c]
+            res[r, c, board[board_r, board_c] + 1] = 1
 
     # rotate matrix to allign all directions
     res = np.rot90(res, k=NUM_ROTATES[direction])
 
-    # map categorical values to meaningfull values
-    res_copy = np.copy(res)
-    for k, v in BASE_VALUE_MAP.items():
-        res_copy[res == k] = v
-
-    return res_copy
-
-
-def get_action_vec(action):
-    res = np.zeros((len(bp.Policy.ACTIONS), 1))
-    res[bp.Policy.ACTIONS.index(action), 0] = 1
-    return res
+    return res.flatten()
 
 def get_action_index(action):
     return bp.Policy.ACTIONS.index(action)
-
 
 class LinearQ(bp.Policy):
     """
@@ -62,90 +49,53 @@ class LinearQ(bp.Policy):
         return policy_args
 
     def init_run(self):
-        self.sess = tf.Session()
-        # input state
-        self.input_state = tf.placeholder(tf.float32, shape=(None, STATE_DIM, STATE_DIM), name='input_state')
-        flatten_satate = tf.reshape(self.input_state, [-1, STATE_DIM**2])
-        # define Q_hat
-        self.W_periodic = tf.get_variable('W_periodic', shape=[STATE_DIM**2, len(bp.Policy.ACTIONS)], dtype=tf.float32, trainable=False, initializer=tf.contrib.layers.xavier_initializer())
-        self.b_periodic = tf.get_variable('b_periodic', shape=[1, 1], dtype=tf.float32, trainable=False, initializer=tf.contrib.layers.xavier_initializer())
-        self.Q_periodic_val = tf.matmul(flatten_satate,self.W_periodic) + self.b_periodic
-        self.best_action_index = tf.argmax(self.Q_periodic_val, axis=1)
-        self.best_action_value = tf.reduce_max(self.Q_periodic_val, reduction_indices=[1])
-
-        # define trainable Q
-        self.W_trainable = tf.get_variable('W_trainable', shape=[STATE_DIM**2, len(bp.Policy.ACTIONS)], dtype=tf.float32, trainable=True, initializer=tf.contrib.layers.xavier_initializer())
-        self.b_trainable = tf.get_variable('b_trainable', shape=[1, 1], dtype=tf.float32, trainable=True, initializer=tf.contrib.layers.xavier_initializer())
-        self.Q_trainable_val = tf.matmul(flatten_satate, self.W_trainable) + self.b_trainable
-
-        # get differentiable value of Q(s,a)
-        self.action_one_hot = tf.placeholder(tf.float32, shape=(None,3,1), name='action_index')
-        Q_trainable_val_reshape = tf.reshape(self.Q_trainable_val, [-1,1,3])
-        action_q_val = tf.matmul(Q_trainable_val_reshape, self.action_one_hot)
-
-        # self.reward = tf.placeholder(tf.float32, shape=(None,), name='reward')
-        self.target_val = tf.placeholder(tf.float32, shape=(None,), name='target_val')
-        target_val = tf.reshape(self.target_val, [-1,1])
-        self.loss = tf.reduce_mean((target_val - action_q_val)**2)
-
-
-        self.global_step = tf.Variable(0, trainable=False)
-        self.train_op = tf.train.AdamOptimizer(learning_rate=LR).minimize(self.loss, self.global_step)
-
-        self.update_periodic_w = tf.assign(self.W_periodic, self.W_trainable)
-        self.update_periodic_b = tf.assign(self.b_periodic, self.b_trainable)
-
-        init = tf.global_variables_initializer()
-        self.sess.run(init)
-
+        num_actions = len(bp.Policy.ACTIONS)
+        state_dim = NUM_BOARD_VALUES*(STATE_DIM**2)
+        self.W_trainable = np.random.normal(size=(num_actions, state_dim))
+        self.W_periodic = np.random.normal(size=(num_actions, state_dim))
         self.playback_deque = deque([])
 
     def learn(self, round, prev_state, prev_action, reward, new_state, too_slow):
         batch_size = min(BATCH_SIZE, len(self.playback_deque))
+        gs_num = 0
         if batch_size > 0:
-            batch_indices = random.sample(range(len(self.playback_deque)), batch_size)
-            batch_arrays = np.array(self.playback_deque)[batch_indices]
-            prev_states = np.stack(batch_arrays[:, 0], axis=0)
-            prev_actions = np.stack(batch_arrays[:, 1], axis=0)
-            rewards = np.stack(batch_arrays[:, 2], axis=0)
-            next_states = np.stack(batch_arrays[:, 3], axis=0)
-            future_q_val = self.sess.run(self.best_action_value, feed_dict={self.input_state: next_states})
-            target_values = rewards + self.discount*future_q_val
-            _, loss, gs_num, debug_trainable_q = self.sess.run([self.train_op, self.loss, self.global_step, self.Q_trainable_val],
-                                            feed_dict={self.input_state: prev_states,
-                                                       self.action_one_hot: prev_actions,
-                                                       self.target_val:target_values
-                                                       })
-
+            for i in range(STEPS_PER_LEARN):
+                batch_indices = random.sample(range(len(self.playback_deque)), batch_size)
+                batch_arrays = np.array(self.playback_deque)[batch_indices]
+                batch_prev_states = np.stack(batch_arrays[:, 0], axis=0)
+                batch_prev_actions = np.stack(batch_arrays[:, 1], axis=0)
+                batch_rewards = np.stack(batch_arrays[:, 2], axis=0)
+                batch_next_states = np.stack(batch_arrays[:, 3], axis=0)
+                gradient = np.zeros(self.W_trainable.shape)
+                for j in range(batch_size):
+                    future_q_val = np.max(np.dot(self.W_periodic, batch_next_states[j]))
+                    last_round_trainable_out = np.dot(self.W_trainable, batch_prev_states[j])
+                    delta = last_round_trainable_out[batch_prev_actions[j]] - batch_rewards[j] - DISCOUNT*future_q_val
+                    gradient[batch_prev_actions[j]] += delta*self.W_trainable[batch_prev_actions[j]]
+                self.W_trainable -= LR*gradient
+                gs_num += 1
 
             if gs_num % UPDATE_STEPS == 0:
-                self.sess.run(self.update_periodic_w)
-                self.sess.run(self.update_periodic_b)
-                if round > DECAY_ROUND:
-                    self.epsilon *= self.exploration_decay
+                self.W_periodic = self.W_trainable
+
+        if round > DECAY_ROUND:
+            self.epsilon -= self.exploration_decay
+
         if round % 100 == 0 :
-            self.log("GS: %d Epsilon: %f, loss: "%(gs_num, self.epsilon)+str(loss))
-            # self.log("\n"+str(prev_states))
-            # self.log("\n"+str(prev_actions))
-            # self.log(debug_trainable_q)
-            # self.log(loss)
-        # self.log("Loss: " + str(loss))
+            self.log("GS: %d Epsilon: %f "%(gs_num, self.epsilon))
 
     def act(self, round, prev_state, prev_action, reward, new_state, too_slow):
-        # start = time()
         if prev_state is None or prev_action is None or reward is None:
-            # print("None states encountered")
             return 'F'
         new_state_vec = get_state_from_board(new_state)
-        self.playback_deque.append([get_state_from_board(prev_state), get_action_vec(prev_action), reward, new_state_vec])
+        self.playback_deque.append([get_state_from_board(prev_state), get_action_index(prev_action), reward, new_state_vec])
         if len(self.playback_deque) > MAX_PLAYBACK:
             self.playback_deque.popleft()
         if np.random.rand() < self.epsilon:
             return np.random.choice(bp.Policy.ACTIONS)
         else:
-            debug_all_states = self.sess.run(self.Q_periodic_val, feed_dict={self.input_state: [new_state_vec]})
-            best_action_index = self.sess.run(self.best_action_index, feed_dict={self.input_state: [new_state_vec]})
-            best_action = bp.Policy.ACTIONS[best_action_index[0]]
-            # self.log("act took %f seconds"%(time()-start))
+            net_out = np.dot(self.W_periodic, new_state_vec)
+            best_action_index = np.argmax(net_out)
+            best_action = bp.Policy.ACTIONS[best_action_index]
             return best_action
 

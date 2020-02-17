@@ -17,19 +17,20 @@ class Avoid(bp.Policy):
         self.r_sum = 0
 
     def learn(self, round, prev_state, prev_action, reward, new_state, too_slow):
-        try:
-            if round % 100 == 0:
-                if round > self.game_duration - self.score_scope:
-                    self.log("Rewards in last 100 rounds which counts towards the score: " + str(self.r_sum), 'VALUE')
-                else:
-                    self.log("Rewards in last 100 rounds: " + str(self.r_sum), 'VALUE')
-                self.r_sum = 0
-            else:
-                self.r_sum += reward
-
-        except Exception as e:
-            self.log("Something Went Wrong...", 'EXCEPTION')
-            self.log(e, 'EXCEPTION')
+        # try:
+        #     if round % 100 == 0:
+        #         if round > self.game_duration - self.score_scope:
+        #             self.log("Rewards in last 100 rounds which counts towards the score: " + str(self.r_sum), 'VALUE')
+        #         else:
+        #             self.log("Rewards in last 100 rounds: " + str(self.r_sum), 'VALUE')
+        #         self.r_sum = 0
+        #     else:
+        #         self.r_sum += reward
+        #
+        # except Exception as e:
+        #     self.log("Something Went Wrong...", 'EXCEPTION')
+        #     self.log(e, 'EXCEPTION')
+        return
 
     def act(self, round, prev_state, prev_action, reward, new_state, too_slow):
 
